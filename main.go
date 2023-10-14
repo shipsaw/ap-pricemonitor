@@ -1,10 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"github.com/gocolly/colly/v2"
 	"github.com/shopspring/decimal"
 	"log"
+	_ "modernc.org/sqlite"
 	"regexp"
 	"strconv"
 )
@@ -13,6 +15,13 @@ const (
 	None      int = 0
 	Essential     = 1
 	Scenario      = 2
+)
+
+const (
+	ArmstrongPowerhouse int = 0
+	Steam                   = 1
+	JustTrains              = 2
+	Other                   = 3
 )
 
 type Product struct {
@@ -28,6 +37,10 @@ var tempConversionRate decimal.Decimal = decimal.NewFromFloat(0.82)
 const homepage = "https://www.armstrongpowerhouse.com"
 
 func main() {
+	db, err := sql.Open("sqlite", "products.db")
+	if err != nil {
+		log.Fatal("Unable to establish db connection")
+	}
 	c := colly.NewCollector(colly.AllowedDomains("www.armstrongpowerhouse.com"))
 
 	sitemapRegex, _ := regexp.Compile(`^https://www.armstrongpowerhouse.com/(enhancements|rolling_stock|routes|scenarios|sounds)/?.*$`)
@@ -50,11 +63,14 @@ func main() {
 				}
 				url := e.ChildAttr("a", "href")
 				idRaw := e.ChildAttr(".controls>.cart>a", "onclick")
-				fmt.Println("idRaw ", idRaw)
 				id, _ := strconv.Atoi(addToCartRegex.FindStringSubmatch(idRaw)[1])
-				fmt.Println("id ", id)
 
 				products = append(products, Product{id, name, price, url})
+				_, err = db.Exec("INSERT OR IGNORE INTO Product (ProductID, Name, URL, Current_Price, Company) VALUES(?, ?, ?, ?, ?);", id, name, url, price.Mul(decimal.NewFromInt32(100)), ArmstrongPowerhouse)
+				if err != nil {
+					log.Fatal("DB ERROR: " + err.Error())
+				}
+				//c.Visit(url)
 			}
 		})
 	})
