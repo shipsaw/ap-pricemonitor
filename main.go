@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"github.com/gocolly/colly/v2"
 	"github.com/shopspring/decimal"
+	"io"
 	"log"
 	_ "modernc.org/sqlite"
+	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,6 +45,7 @@ var productPageUrls []string
 const homepage = "https://www.armstrongpowerhouse.com"
 
 func main() {
+	fmt.Println("Starting")
 	db, err := sql.Open("sqlite", "products.db")
 	if err != nil {
 		log.Fatal("Unable to establish db connection")
@@ -51,7 +57,7 @@ func main() {
 	requirementsRegex, err := regexp.Compile(`^\s*(?:AP|DTG|ATS|JT|Fastline Simulation) (.*) -[ \xa0]More Information`)
 	urlRegex, _ := regexp.Compile(`(www.armstrongpowerhouse.com|store.steampowered.com|www.justtrains.net|www.fastline-simulation.co.uk|sites.fastspring.com)`)
 	apProdIdRegex, _ := regexp.Compile(`product_id=(\d*)`)
-	steamUrlRegex, _ := regexp.Compile(`^https?://(store.steampowered.com/app/\d*)`)
+	steamUrlRegex, _ := regexp.Compile(`^https?://store.steampowered.com/app/(\d*)`)
 
 	if err != nil {
 		log.Fatal(err.Error())
@@ -185,14 +191,84 @@ func main() {
 			}
 		})
 	})
+	//
+	//c.Visit(fmt.Sprintf("%s/index.php?route=information/sitemap", homepage))
+	//for _, url := range productPageUrls {
+	//	c.Visit(url)
+	//}
+	//
+	//var priceSum decimal.Decimal
+	//for _, p := range products {
+	//	priceSum = priceSum.Add(p.price)
+	//}
+	//
 
-	c.Visit(fmt.Sprintf("%s/index.php?route=information/sitemap", homepage))
-	for _, url := range productPageUrls {
-		c.Visit(url)
+	isadKey := os.Getenv("isadKey")
+
+	// HTTP endpoint
+	rows, err := db.Query("SELECT URL FROM Product where Company = 1")
+	if err != nil {
+		log.Fatal("Error getting steam ids")
 	}
 
-	var priceSum decimal.Decimal
-	for _, p := range products {
-		priceSum = priceSum.Add(p.price)
+	var appids []string
+	var steamid string
+	for rows.Next() {
+		err := rows.Scan(&steamid)
+		if err != nil {
+			log.Fatal(err)
+		}
+		appids = append(appids, fmt.Sprintf("app/%s", steamid))
 	}
+
+	BASE_URL := fmt.Sprintf("https://api.isthereanydeal.com/v01/game/plain/id/?key=%s&shop=steam", isadKey)
+	fmt.Println(BASE_URL)
+
+	//type PostBody struct {
+	//	Ids [][]byte `json:"ids"`
+	//}
+
+	// Prepare URL
+	//postURL := url.URL{
+	//	Host:   BASE_URL,
+	//	Path:   "/todos",
+	//	Scheme: "https",
+	//}
+
+	// Prepare request body
+	//body := bytes.Join(appids, []byte(","))
+
+	bodyBytes, err := json.Marshal(&appids)
+	if err != nil {
+		log.Fatal(err)
+	}
+	//fmt.Println(string(bodyBytes))
+
+	reader := bytes.NewReader(bodyBytes)
+
+	// Make HTTP POST request
+	resp, err := http.Post(BASE_URL, "application/json", reader)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Close response body
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	// Read response body
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if resp.StatusCode >= 400 && resp.StatusCode <= 500 {
+		log.Println("Error response. Status Code: ", resp.StatusCode)
+	}
+
+	log.Println("Response:", string(responseBody))
 }
