@@ -1,10 +1,10 @@
 CREATE TABLE IF NOT EXISTS Product (
                                        ProductID INT,
                                        Name TEXT NOT NULL UNIQUE,
-                                       URL TEXT COLLATE NOCASE UNIQUE,
+                                       URL TEXT COLLATE NOCASE,
                                        Current_Price INT,
                                        Lowest_Price INT,
-                                       Company INT NOT NULL DEFAULT 3,
+                                       Company INT NOT NULL DEFAULT 5
     );
 
 CREATE TABLE IF NOT EXISTS EssentialJoin (

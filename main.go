@@ -7,7 +7,6 @@ import (
 	"github.com/shopspring/decimal"
 	"log"
 	_ "modernc.org/sqlite"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,7 +22,9 @@ const (
 	ArmstrongPowerhouse int = 0
 	Steam                   = 1
 	JustTrains              = 2
-	Other                   = 3
+	FastlineSimulation      = 3
+	ATS                     = 4
+	Other                   = 5
 )
 
 type Product struct {
@@ -35,7 +36,6 @@ type Product struct {
 
 var products []Product
 var productPageUrls []string
-var tempConversionRate decimal.Decimal = decimal.NewFromFloat(0.82)
 
 const homepage = "https://www.armstrongpowerhouse.com"
 
@@ -48,9 +48,10 @@ func main() {
 
 	sitemapRegex, _ := regexp.Compile(`^https://www.armstrongpowerhouse.com/(enhancements|rolling_stock|routes|scenarios|sounds)/?.*$`)
 	addToCartRegex, _ := regexp.Compile(`^\s*addToCart\(\'(\d*)\'\);$`)
-	requirementsRegex, err := regexp.Compile(`^\s*(?:AP|DTG|ATS|JT) (.*) -[ \xa0]More Information$`)
-	urlRegex, _ := regexp.Compile(`^https://(www.armstrongpowerhouse.com|store.steampowered.com|www.justtrains.net)`)
+	requirementsRegex, err := regexp.Compile(`^\s*(?:AP|DTG|ATS|JT|Fastline Simulation) (.*) -[ \xa0]More Information`)
+	urlRegex, _ := regexp.Compile(`(www.armstrongpowerhouse.com|store.steampowered.com|www.justtrains.net|www.fastline-simulation.co.uk|sites.fastspring.com)`)
 	apProdIdRegex, _ := regexp.Compile(`product_id=(\d*)`)
+	steamUrlRegex, _ := regexp.Compile(`^https?://(store.steampowered.com/app/\d*)`)
 
 	if err != nil {
 		log.Fatal(err.Error())
@@ -82,12 +83,7 @@ func main() {
 				if err != nil {
 					log.Fatal("DB ERROR: " + err.Error())
 				}
-				fmt.Println("PRODUCT: " + name)
 
-				if url == "fsa-fta-wagon-pack" {
-					fmt.Println("FOUND IT " + name)
-					os.Exit(1)
-				}
 				productPageUrls = append(productPageUrls, homepage+"/"+url)
 			}
 		})
@@ -101,7 +97,6 @@ func main() {
 		if err = result.Scan(&rowIndex); err != nil {
 			log.Fatal("Unable to scan row")
 		}
-		fmt.Printf("RowIndex: %v\n", rowIndex)
 		requirementType := None
 		e.ForEach("p", func(_ int, e *colly.HTMLElement) {
 			if e.ChildText("u>b") == "Essential Requirements" {
@@ -111,10 +106,10 @@ func main() {
 			}
 			var name string
 			var href string
-			if len(e.ChildAttr("b>a,strong>a,a:has(strong)", "href")) > 0 && requirementsRegex.MatchString(e.Text) {
+			if len(e.ChildAttr("b>a,strong>a,a:has(strong),a:has(b)", "href")) > 0 && requirementsRegex.MatchString(e.Text) {
 				nameRaw := e.Text
 				name = requirementsRegex.FindStringSubmatch(nameRaw)[1]
-				href = e.ChildAttr("b>a,strong>a,a:has(strong)", "href")
+				href = e.ChildAttr("b>a,strong>a,a:has(strong),a:has(b)", "href")
 				sourcetype := -1
 				source := urlRegex.FindStringSubmatch(href)
 				if len(source) > 1 {
@@ -125,9 +120,15 @@ func main() {
 						sourcetype = Steam
 					case "www.justtrains.net":
 						sourcetype = JustTrains
+					case "sites.fastspring.com":
+						sourcetype = FastlineSimulation
+					case "www.fastline-simulation.co.uk":
+						sourcetype = FastlineSimulation
+					case "alanthomsonsim.com":
+						sourcetype = ATS
 					}
 				}
-				fmt.Printf("RequirementType: %d, Name: %s, Href: %s, SourceType: %d\n", requirementType, name, href, sourcetype)
+
 				var requirementID int
 				if sourcetype == ArmstrongPowerhouse {
 					matchResult := apProdIdRegex.FindStringSubmatch(href)
@@ -146,26 +147,24 @@ func main() {
 						if err = result.Scan(&requirementID); err != nil {
 							log.Fatal("Unable to scan row")
 						}
-						fmt.Printf("From url regex, req id is set to %d\n", requirementID)
+
 					} else {
-						//fmt.Println(href)
 						productUrlArray := strings.Split(href, "/")
 						productUrl := productUrlArray[len(productUrlArray)-1]
 						if productUrl == "fsa-fta-wagon-pack" { // BUG ON THE AP SITE Class 317 Vol 1
 							productUrl = strings.Replace(productUrl, "-", "_", -1)
 						}
 						productUrl = strings.Split(productUrl, "?")[0] // Other link bug ica d wagon pack for tda d link
-						//fmt.Println(productUrl)
-						fmt.Printf("From ap link, product url is %d\n", productUrl)
 						result := db.QueryRow("SELECT ROWID FROM Product WHERE URL = ?", productUrl)
 						if err = result.Scan(&requirementID); err != nil {
 							log.Fatal("Unable to scan row")
 						}
-
-						fmt.Printf("From AP link, req id is set to %d\n", requirementID)
 					}
 				} else {
-					result = db.QueryRow("SELECT ROWID from Product where Name = $1 OR URL = $2;", name, href)
+					if steamUrlRegex.MatchString(href) {
+						href = steamUrlRegex.FindStringSubmatch(href)[1]
+					}
+					result = db.QueryRow("SELECT ROWID from Product where Name = $1 OR ($2 <> 3 AND URL = $3);", name, sourcetype, href)
 					if err = result.Scan(&requirementID); err != nil {
 						_, err = db.Exec("INSERT INTO Product (Name, URL, Company) VALUES(?, ?, ?);", name, href, sourcetype)
 						if err != nil {
@@ -177,53 +176,23 @@ func main() {
 							log.Fatal("Unable to get recently inserted id")
 						}
 					}
-					fmt.Printf("From Non-AP row, req id is set to %d\n", requirementID)
 				}
 				if requirementType == Essential {
 					_, err = db.Exec("INSERT INTO EssentialJoin (ProductID, EssentialID) VALUES(?, ?);", rowIndex, requirementID)
 				} else if requirementType == Scenario {
 					_, err = db.Exec("INSERT INTO ScenarioJoin (ProductID, ScenarioID) VALUES(?, ?);", rowIndex, requirementID)
 				}
-			} else if len(e.ChildAttr("b>a,strong>a,a>strong", "href")) > 0 && !requirementsRegex.MatchString(e.Text) {
-				//fmt.Println("NO MATCH")
-				//fmt.Println("----------------------------------------")
-				//fmt.Print(e.Text)
-				//fmt.Println("----------------------------------------")
 			}
 		})
 	})
 
-	fmt.Println("Calculating...")
 	c.Visit(fmt.Sprintf("%s/index.php?route=information/sitemap", homepage))
 	for _, url := range productPageUrls {
 		c.Visit(url)
 	}
 
-	//for _, p := range products {
-	//	c.Visit(p.link)
-	//}
-
 	var priceSum decimal.Decimal
 	for _, p := range products {
-		fmt.Printf("Id: %v, Name: %s, Price: %v, Link: %v\n", p.id, p.name, p.price, p.link)
 		priceSum = priceSum.Add(p.price)
 	}
-	fmt.Println("\nTotal cost in pounds: $" + priceSum.Truncate(2).String())
-	fmt.Println("Total cost in dollars: $" + priceSum.Div(tempConversionRate).Truncate(2).String())
-
-}
-func ProductExists(db *sql.DB, name string) bool {
-	sqlStmt := `SELECT Name FROM Product WHERE Name = ?`
-	err := db.QueryRow(sqlStmt, name).Scan(&name)
-	if err != nil {
-		if err != sql.ErrNoRows {
-			// a real error happened! you should change your function return
-			// to "(bool, error)" and return "false, err" here
-			log.Print("OH NO: " + err.Error())
-		}
-
-		return false
-	}
-
-	return true
 }
