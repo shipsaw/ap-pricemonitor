@@ -11,6 +11,7 @@ import (
 	"log"
 	_ "modernc.org/sqlite"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -50,14 +51,17 @@ func main() {
 	if err != nil {
 		log.Fatal("Unable to establish db connection")
 	}
-	c := colly.NewCollector(colly.AllowedDomains("www.armstrongpowerhouse.com"))
+	c := colly.NewCollector(colly.AllowedDomains("www.armstrongpowerhouse.com", "www.justtrains.net", "alanthomsonsim.com"))
 
 	sitemapRegex, _ := regexp.Compile(`^https://www.armstrongpowerhouse.com/(enhancements|rolling_stock|routes|scenarios|sounds)/?.*$`)
 	addToCartRegex, _ := regexp.Compile(`^\s*addToCart\(\'(\d*)\'\);$`)
 	requirementsRegex, err := regexp.Compile(`^\s*(?:AP|DTG|ATS|JT|Fastline Simulation) (.*) -[ \xa0]More Information`)
-	urlRegex, _ := regexp.Compile(`(www.armstrongpowerhouse.com|store.steampowered.com|www.justtrains.net|www.fastline-simulation.co.uk|sites.fastspring.com)`)
+	urlRegex, _ := regexp.Compile(`(www.armstrongpowerhouse.com|store.steampowered.com|www.justtrains.net|www.fastline-simulation.co.uk|sites.fastspring.com|alanthomsonsim.com)`)
 	apProdIdRegex, _ := regexp.Compile(`product_id=(\d*)`)
-	steamUrlRegex, _ := regexp.Compile(`^https?://store.steampowered.com/app/(\d*)`)
+	steamUrlRegex, _ := regexp.Compile(`^https?://store.steampowered.com/(app/\d*)`)
+	atsUrlRegex, _ := regexp.Compile(`https://alanthomsonsim.com/(product/[^/]*)`)
+	jtUrlRegex, _ := regexp.Compile("https?://www.justtrains.net/(product/[^/]*)")
+	jtUrlPriceRegex, _ := regexp.Compile(`^US\$(\d*\.\d*)$`)
 
 	if err != nil {
 		log.Fatal(err.Error())
@@ -66,6 +70,42 @@ func main() {
 		if sitemapRegex.MatchString(e.Attr("href")) {
 			e.Request.Visit(e.Attr("href"))
 		}
+	})
+
+	// JT Site Price Parsing
+	c.OnHTML("#lblPrice2", func(e *colly.HTMLElement) {
+		if jtUrlPriceRegex.MatchString(e.Text) {
+			jtPrice, err := decimal.NewFromString(jtUrlPriceRegex.FindStringSubmatch(e.Text)[1])
+			if err != nil {
+				log.Fatal("Unable to parse JT Price: ", err)
+			}
+			// TODO: Update with proper exchange value
+			jtPrice = jtPrice.Mul(decimal.NewFromFloat(0.82)).Mul(decimal.NewFromInt32(100)).Truncate(0)
+
+			fmt.Println(jtPrice)
+			jtUrl := jtUrlRegex.FindStringSubmatch(e.Request.URL.String())[1]
+			fmt.Println(jtUrl)
+			_, err = db.Exec("UPDATE Product SET Current_Price = $1 WHERE URL = $2", jtPrice, jtUrl)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+		}
+	})
+
+	// ATS Site Price Parsing
+	c.OnHTML(".product_title+.price>span>bdi", func(e *colly.HTMLElement) {
+		fmt.Println(e.Text)
+		atsPrice := strings.ReplaceAll(e.Text, ".", "")[2:]
+		fmt.Println(atsPrice)
+
+		atsUrl := atsUrlRegex.FindStringSubmatch(e.Request.URL.String())[1]
+		fmt.Println(atsUrl)
+		_, err = db.Exec("UPDATE Product SET Current_Price = $1 WHERE URL = $2", atsPrice, atsUrl)
+		if err != nil {
+			log.Fatal(err)
+		}
+
 	})
 
 	c.OnHTML(".product-list", func(e *colly.HTMLElement) {
@@ -170,6 +210,12 @@ func main() {
 					if steamUrlRegex.MatchString(href) {
 						href = steamUrlRegex.FindStringSubmatch(href)[1]
 					}
+					if jtUrlRegex.MatchString(href) {
+						href = jtUrlRegex.FindStringSubmatch(href)[1]
+					}
+					if atsUrlRegex.MatchString(href) {
+						href = atsUrlRegex.FindStringSubmatch(href)[1]
+					}
 					result = db.QueryRow("SELECT ROWID from Product where Name = $1 OR ($2 <> 3 AND URL = $3);", name, sourcetype, href)
 					if err = result.Scan(&requirementID); err != nil {
 						_, err = db.Exec("INSERT INTO Product (Name, URL, Company) VALUES(?, ?, ?);", name, href, sourcetype)
@@ -191,7 +237,7 @@ func main() {
 			}
 		})
 	})
-	//
+
 	//c.Visit(fmt.Sprintf("%s/index.php?route=information/sitemap", homepage))
 	//for _, url := range productPageUrls {
 	//	c.Visit(url)
@@ -201,74 +247,213 @@ func main() {
 	//for _, p := range products {
 	//	priceSum = priceSum.Add(p.price)
 	//}
-	//
 
+	//fetchSteamPrices(db)
+	//fetchJtPrices(c, db)
+	//fetchAtsPrices(c, db)
+	//addMissingPrices(db)
+	reportDailyPrice(db)
+}
+
+func reportDailyPrice(db *sql.DB) {
+	atsRows, err := db.Query("SELECT Name, Current_Price FROM Product")
+	if err != nil {
+		log.Fatal("Error getting ats ids")
+	}
+	var name string
+	var price int
+	namePriceMap := make(map[string]int)
+	for atsRows.Next() {
+		err := atsRows.Scan(&name, &price)
+		if err != nil {
+			log.Fatal(err)
+		}
+		namePriceMap[name] = price
+	}
+	_, err = db.Exec("INSERT OR REPLACE INTO PriceReporting (Date) VALUES(CURRENT_DATE);")
+	for k, v := range namePriceMap {
+		//keyModded := fmt.Sprintf("[%s]", k)
+		if err != nil {
+			log.Fatal(err)
+		}
+		query := fmt.Sprintf("UPDATE PriceReporting SET [%s] = ? WHERE [Date] = (CURRENT_DATE);", k)
+		_, err := db.Exec(query, v)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+}
+
+// This function exists due to missing entries in IsThereAnyDeal api and fastline because it's a dead site now
+func addMissingPrices(db *sql.DB) {
+	db.Exec("UPDATE Product SET Current_Price = 999 WHERE URL = 'app/24083'")
+	db.Exec("UPDATE Product SET Current_Price = 2499 WHERE URL = 'app/222554'")
+	db.Exec("UPDATE Product SET Current_Price = 350 WHERE Name = '102t GLW Bogie Tanks'")
+	db.Exec("UPDATE Product SET Current_Price = 350 WHERE Name = 'HEA Hoppers - Post BR'")
+	db.Exec("UPDATE Product SET Current_Price = 350 WHERE Name = 'ZCA Sea Urchins'")
+}
+
+func fetchAtsPrices(c *colly.Collector, db *sql.DB) {
+	atsRows, err := db.Query("SELECT URL FROM Product where Company = 4")
+	if err != nil {
+		log.Fatal("Error getting ats ids")
+	}
+
+	var atsUrl string
+	var atsUrls []string
+	for atsRows.Next() {
+		err := atsRows.Scan(&atsUrl)
+		if err != nil {
+			log.Fatal(err)
+		}
+		atsUrls = append(atsUrls, atsUrl)
+	}
+	for _, u := range atsUrls {
+		c.Visit("https://alanthomsonsim.com/" + u)
+	}
+}
+
+func fetchJtPrices(c *colly.Collector, db *sql.DB) {
+	jtRows, err := db.Query("SELECT URL FROM Product where Company = 2")
+	if err != nil {
+		log.Fatal("Error getting jt ids")
+	}
+
+	var jtUrl string
+	var jtUrls []string
+	for jtRows.Next() {
+		err := jtRows.Scan(&jtUrl)
+		if err != nil {
+			log.Fatal(err)
+		}
+		jtUrls = append(jtUrls, jtUrl)
+	}
+	for _, u := range jtUrls {
+		c.Visit("https://www.justtrains.net/" + u)
+	}
+}
+
+func fetchSteamPrices(db *sql.DB) {
 	isadKey := os.Getenv("isadKey")
 
 	// HTTP endpoint
-	rows, err := db.Query("SELECT URL FROM Product where Company = 1")
+	steamRows, err := db.Query("SELECT URL FROM Product where Company = 1")
 	if err != nil {
 		log.Fatal("Error getting steam ids")
 	}
 
-	var appids []string
 	var steamid string
-	for rows.Next() {
-		err := rows.Scan(&steamid)
+	var appids []string
+	for steamRows.Next() {
+		err := steamRows.Scan(&steamid)
 		if err != nil {
 			log.Fatal(err)
 		}
-		appids = append(appids, fmt.Sprintf("app/%s", steamid))
+		appids = append(appids, steamid)
 	}
 
-	BASE_URL := fmt.Sprintf("https://api.isthereanydeal.com/v01/game/plain/id/?key=%s&shop=steam", isadKey)
-	fmt.Println(BASE_URL)
+	plainsUrl := fmt.Sprintf("https://api.isthereanydeal.com/v01/game/plain/id/?key=%s&shop=steam&country=GB", isadKey)
 
-	//type PostBody struct {
-	//	Ids [][]byte `json:"ids"`
-	//}
-
-	// Prepare URL
-	//postURL := url.URL{
-	//	Host:   BASE_URL,
-	//	Path:   "/todos",
-	//	Scheme: "https",
-	//}
-
-	// Prepare request body
-	//body := bytes.Join(appids, []byte(","))
-
-	bodyBytes, err := json.Marshal(&appids)
+	plainsBodyBytes, err := json.Marshal(&appids)
 	if err != nil {
 		log.Fatal(err)
 	}
-	//fmt.Println(string(bodyBytes))
 
-	reader := bytes.NewReader(bodyBytes)
+	reader := bytes.NewReader(plainsBodyBytes)
 
 	// Make HTTP POST request
-	resp, err := http.Post(BASE_URL, "application/json", reader)
+	plainsResp, err := http.Post(plainsUrl, "application/json", reader)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Close response body
 	defer func() {
-		err := resp.Body.Close()
+		err := plainsResp.Body.Close()
 		if err != nil {
 			log.Fatal(err)
 		}
 	}()
 
 	// Read response body
-	responseBody, err := io.ReadAll(resp.Body)
+	plainsResponseBody, err := io.ReadAll(plainsResp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	type PlainsResponseType struct {
+		Data map[string]string `json:"data"`
+	}
+
+	plainsResponseObj := PlainsResponseType{Data: make(map[string]string)}
+
+	json.Unmarshal(plainsResponseBody, &plainsResponseObj)
+
+	if plainsResp.StatusCode >= 400 && plainsResp.StatusCode <= 500 {
+		log.Println("Error response. Status Code: ", plainsResp.StatusCode)
+	}
+
+	for k, v := range plainsResponseBody {
+		fmt.Println(k, v)
+	}
+
+	// Use the plains data to retrieve the price data
+	var priceRequestParams []string
+	for _, v := range plainsResponseObj.Data {
+		priceRequestParams = append(priceRequestParams, v)
+	}
+	priceUrl := fmt.Sprintf("https://api.isthereanydeal.com/v01/game/prices/?key=%s&country=GB&plains=", isadKey)
+	priceResp, err := http.Get(priceUrl + url.QueryEscape(strings.Join(priceRequestParams, ",")))
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Close response body
+	defer func() {
+		err := priceResp.Body.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	priceResponseBody, err := io.ReadAll(priceResp.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if resp.StatusCode >= 400 && resp.StatusCode <= 500 {
-		log.Println("Error response. Status Code: ", resp.StatusCode)
+	type ProductDetails struct {
+		PriceNew float64 `json:"price_new"`
+		PriceOld float64 `json:"price_old"`
+		PriceCut float64 `json:"price_cut"`
+		Url      float64 `json:"url"`
 	}
 
-	log.Println("Response:", string(responseBody))
+	type ProductDetailsList struct {
+		List []ProductDetails `json:"list"`
+	}
+
+	type PriceResponseType struct {
+		Data map[string]ProductDetailsList `json:"data"`
+	}
+
+	//type ResponseType struct {
+	//	Data map[string]string `json:"data"`
+	//}
+	//
+	priceResponseObj := PriceResponseType{Data: make(map[string]ProductDetailsList)}
+
+	json.Unmarshal(priceResponseBody, &priceResponseObj)
+
+	if priceResp.StatusCode >= 400 && priceResp.StatusCode <= 500 {
+		log.Println("Error response. Status Code: ", priceResp.StatusCode)
+	}
+
+	urlPriceMap := make(map[string]decimal.Decimal)
+	for k, v := range plainsResponseObj.Data {
+		if len(priceResponseObj.Data[v].List) > 0 {
+			urlPriceMap[k] = decimal.NewFromFloat(priceResponseObj.Data[v].List[0].PriceNew).Truncate(2).Mul(decimal.NewFromInt32(100))
+		}
+	}
+
+	for k, v := range urlPriceMap {
+		db.Exec("UPDATE Product SET Current_Price = $1 WHERE URL = $2", v, k)
+	}
 }
