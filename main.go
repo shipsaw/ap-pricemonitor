@@ -46,7 +46,7 @@ var productPageUrls []string
 const homepage = "https://www.armstrongpowerhouse.com"
 
 func main() {
-	fmt.Println("Starting")
+	log.Println("Starting")
 	db, err := sql.Open("sqlite", "products.db")
 	if err != nil {
 		log.Fatal("Unable to establish db connection")
@@ -82,9 +82,7 @@ func main() {
 			// TODO: Update with proper exchange value
 			jtPrice = jtPrice.Mul(decimal.NewFromFloat(0.82)).Mul(decimal.NewFromInt32(100)).Truncate(0)
 
-			fmt.Println(jtPrice)
 			jtUrl := jtUrlRegex.FindStringSubmatch(e.Request.URL.String())[1]
-			fmt.Println(jtUrl)
 			_, err = db.Exec("UPDATE Product SET Current_Price = $1 WHERE URL = $2", jtPrice, jtUrl)
 			if err != nil {
 				log.Fatal(err)
@@ -95,12 +93,9 @@ func main() {
 
 	// ATS Site Price Parsing
 	c.OnHTML(".product_title+.price>span>bdi", func(e *colly.HTMLElement) {
-		fmt.Println(e.Text)
 		atsPrice := strings.ReplaceAll(e.Text, ".", "")[2:]
-		fmt.Println(atsPrice)
 
 		atsUrl := atsUrlRegex.FindStringSubmatch(e.Request.URL.String())[1]
-		fmt.Println(atsUrl)
 		_, err = db.Exec("UPDATE Product SET Current_Price = $1 WHERE URL = $2", atsPrice, atsUrl)
 		if err != nil {
 			log.Fatal(err)
@@ -238,24 +233,26 @@ func main() {
 		})
 	})
 
-	//c.Visit(fmt.Sprintf("%s/index.php?route=information/sitemap", homepage))
-	//for _, url := range productPageUrls {
-	//	c.Visit(url)
-	//}
-	//
-	//var priceSum decimal.Decimal
-	//for _, p := range products {
-	//	priceSum = priceSum.Add(p.price)
-	//}
+	log.Println("Scraping AP site...")
+	c.Visit(fmt.Sprintf("%s/index.php?route=information/sitemap", homepage))
+	for _, url := range productPageUrls {
+		c.Visit(url)
+	}
 
-	//fetchSteamPrices(db)
-	//fetchJtPrices(c, db)
-	//fetchAtsPrices(c, db)
-	//addMissingPrices(db)
+	var priceSum decimal.Decimal
+	for _, p := range products {
+		priceSum = priceSum.Add(p.price)
+	}
+
+	fetchSteamPrices(db)
+	fetchJtPrices(c, db)
+	fetchAtsPrices(c, db)
+	addMissingPrices(db)
 	reportDailyPrice(db)
 }
 
 func reportDailyPrice(db *sql.DB) {
+	log.Println("Creating reporting data...")
 	atsRows, err := db.Query("SELECT Name, Current_Price FROM Product")
 	if err != nil {
 		log.Fatal("Error getting ats ids")
@@ -272,7 +269,6 @@ func reportDailyPrice(db *sql.DB) {
 	}
 	_, err = db.Exec("INSERT OR REPLACE INTO PriceReporting (Date) VALUES(CURRENT_DATE);")
 	for k, v := range namePriceMap {
-		//keyModded := fmt.Sprintf("[%s]", k)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -287,6 +283,7 @@ func reportDailyPrice(db *sql.DB) {
 
 // This function exists due to missing entries in IsThereAnyDeal api and fastline because it's a dead site now
 func addMissingPrices(db *sql.DB) {
+	log.Println("Adding missing prices...")
 	db.Exec("UPDATE Product SET Current_Price = 999 WHERE URL = 'app/24083'")
 	db.Exec("UPDATE Product SET Current_Price = 2499 WHERE URL = 'app/222554'")
 	db.Exec("UPDATE Product SET Current_Price = 350 WHERE Name = '102t GLW Bogie Tanks'")
@@ -295,6 +292,7 @@ func addMissingPrices(db *sql.DB) {
 }
 
 func fetchAtsPrices(c *colly.Collector, db *sql.DB) {
+	log.Println("Retrieving ATS Prices...")
 	atsRows, err := db.Query("SELECT URL FROM Product where Company = 4")
 	if err != nil {
 		log.Fatal("Error getting ats ids")
@@ -315,6 +313,7 @@ func fetchAtsPrices(c *colly.Collector, db *sql.DB) {
 }
 
 func fetchJtPrices(c *colly.Collector, db *sql.DB) {
+	log.Println("Retrieving JT Prices...")
 	jtRows, err := db.Query("SELECT URL FROM Product where Company = 2")
 	if err != nil {
 		log.Fatal("Error getting jt ids")
@@ -335,6 +334,7 @@ func fetchJtPrices(c *colly.Collector, db *sql.DB) {
 }
 
 func fetchSteamPrices(db *sql.DB) {
+	log.Println("Retrieving Steam Prices...")
 	isadKey := os.Getenv("isadKey")
 
 	// HTTP endpoint
@@ -390,10 +390,6 @@ func fetchSteamPrices(db *sql.DB) {
 
 	if plainsResp.StatusCode >= 400 && plainsResp.StatusCode <= 500 {
 		log.Println("Error response. Status Code: ", plainsResp.StatusCode)
-	}
-
-	for k, v := range plainsResponseBody {
-		fmt.Println(k, v)
 	}
 
 	// Use the plains data to retrieve the price data
