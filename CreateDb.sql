@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS Product (
+CREATE TABLE IF NOT EXISTS NewProduct (
     ProductID INT,
     Name TEXT NOT NULL UNIQUE,
     URL TEXT COLLATE NOCASE,
@@ -7,21 +7,28 @@ CREATE TABLE IF NOT EXISTS Product (
     Company INT NOT NULL DEFAULT 5
 );
 
-CREATE TABLE IF NOT EXISTS EssentialJoin (
+CREATE TABLE IF NOT EXISTS NewEssentialJoin (
     ProductID INT,
     EssentialID INT,
     FOREIGN KEY(ProductID) REFERENCES Product(ROWID),
     FOREIGN KEY(EssentialID) REFERENCES Product(ROWID)
 );
 
-CREATE TABLE IF NOT EXISTS ScenarioJoin (
+CREATE TABLE IF NOT EXISTS NewScenarioJoin (
     ProductID INT,
     ScenarioID INT,
     FOREIGN KEY(ProductID) REFERENCES Product(ROWID),
     FOREIGN KEY(ScenarioID) REFERENCES Product(ROWID)
 );
 
-CREATE TABLE PriceReporting(
+CREATE TABLE IF NOT EXISTS NewRecommendedJoin (
+    ProductID INT,
+    ScenarioID INT,
+    FOREIGN KEY(ProductID) REFERENCES Product(ROWID),
+    FOREIGN KEY(ScenarioID) REFERENCES Product(ROWID)
+);
+
+CREATE TABLE IF NOT EXISTS PriceReporting(
     Date TEXT UNIQUE NOT NULL,
     "102t GLW Bogie Tanks" INT,
     "BAA/BZA Wagon Pack" INT,
