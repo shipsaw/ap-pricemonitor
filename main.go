@@ -307,8 +307,8 @@ func reportDailyPrice(db *sql.DB) {
 	}
 
 	var name string
-	var price int
-	namePriceMap := make(map[string]int)
+	var price sql.NullInt64
+	namePriceMap := make(map[string]sql.NullInt64)
 	for productRows.Next() {
 		err := productRows.Scan(&name, &price)
 		if err != nil {

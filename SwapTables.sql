@@ -1,11 +1,11 @@
-DROP TABLE Product;
+DROP TABLE IF EXISTS Product;
 ALTER TABLE NewProduct RENAME TO Product;
 
-DROP TABLE EssentialJoin;
+DROP TABLE IF EXISTS EssentialJoin;
 ALTER TABLE NewEssentialJoin RENAME TO EssentialJoin;
 
-DROP TABLE ScenarioJoin ;
+DROP TABLE IF EXISTS ScenarioJoin ;
 ALTER TABLE NewScenarioJoin RENAME TO ScenarioJoin ;
 
-DROP TABLE RecommendedJoin;
+DROP TABLE IF EXISTS RecommendedJoin;
 ALTER TABLE NewRecommendedJoin  RENAME TO RecommendedJoin;
